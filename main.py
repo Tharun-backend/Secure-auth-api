@@ -1,8 +1,10 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from passlib.context import CryptContext
 from jose import jwt
 from datetime import datetime, timedelta
+from sqlalchemy import text
+from database import engine
 
 app = FastAPI()
 
@@ -10,8 +12,6 @@ SECRET_KEY = "mysecretkey"
 ALGORITHM = "HS256"
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-users = []
 
 class User(BaseModel):
     username: str
@@ -32,22 +32,26 @@ def create_token(data: dict):
 @app.post("/register")
 def register(user: User):
     hashed_pwd = hash_password(user.password)
-    users.append({"username": user.username, "password": hashed_pwd})
+
+    with engine.connect() as conn:
+        conn.execute(
+            text("INSERT INTO users (username, password) VALUES (:username, :password)"),
+            {"username": user.username, "password": hashed_pwd}
+        )
+        conn.commit()
+
     return {"message": "User registered successfully"}
 
 @app.post("/login")
 def login(user: User):
-    for u in users:
-        if u["username"] == user.username and verify_password(user.password, u["password"]):
-            token = create_token({"sub": user.username})
-            return {"access_token": token}
-    raise HTTPException(status_code=401, detail="Invalid credentials")
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT * FROM users WHERE username=:username"),
+            {"username": user.username}
+        ).fetchone()
 
-# Protected route
-@app.get("/protected")
-def protected(token: str):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return {"message": f"Welcome {payload['sub']}"}
-    except:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    if result and verify_password(user.password, result[2]):
+        token = create_token({"sub": user.username})
+        return {"access_token": token}
+
+    raise HTTPException(status_code=401, detail="Invalid credentials")
